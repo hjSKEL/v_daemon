@@ -30,7 +30,7 @@ JDK 17 이상과 Maven 3.9 이상을 사용한다. 현재 검증 환경은 JDK 1
 
 ```powershell
 cd C:\AntigravityProject\v_daemon
-.\build.ps1 -JavaHome 'C:\Program Files\Microsoft\jdk-17.0.19.10-hotspot'
+.\build.ps1 -JavaHome 'C:\Program Files\Java\jdk-17'
 node --test src/test/js/app.test.cjs
 .\shutdown-all.bat
 .\runtime\prepare.ps1
