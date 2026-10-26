@@ -45,6 +45,10 @@ class HttpTest {
             assertEquals(400, duplicate.statusCode());
             var check = client.send(HttpRequest.newBuilder(URI.create(base + "/api/validate")).header("Origin", base).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString("{\"chargerId\":\"000001-01\",\"idTag\":\"CARD\"}")).build(), HttpResponse.BodyHandlers.ofString());
             assertEquals(400, check.statusCode()); assertTrue(check.body().contains("db.url"));
+            var meters = client.send(HttpRequest.newBuilder(URI.create(base + "/api/chargers/000001-01/meters")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(400, meters.statusCode()); assertTrue(meters.body().contains("db.url"));
+            var unknownMeters = client.send(HttpRequest.newBuilder(URI.create(base + "/api/chargers/999999-99/meters")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(400, unknownMeters.statusCode()); assertTrue(unknownMeters.body().contains("등록되지 않은 충전기"));
             var malformed = client.send(HttpRequest.newBuilder(URI.create(base + "/api/chargers")).header("Origin", base).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString("{" )).build(), HttpResponse.BodyHandlers.ofString());
             assertEquals(400, malformed.statusCode());
         }

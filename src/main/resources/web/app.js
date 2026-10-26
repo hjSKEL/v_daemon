@@ -3,8 +3,8 @@ const $ = id => document.getElementById(id);
 let selected = '', current = null, lastEventSignature = '', polling = false, selectionVersion = 0;
 const drafts = new Map();
 const selectedConnectors = new Map();
-let selectionPending = false;
-const draftFields = ['steps', 'idTag', 'meterStartWh', 'energyWh', 'durationSeconds', 'sampleSeconds', 'startsAt', 'speed', 'includeBoot', 'includeAuthorize'];
+let selectionPending = false, meterLoadVersion = 0;
+const draftFields = ['steps', 'idTag', 'meterStartWh', 'energyWh', 'durationHours', 'durationMinutes', 'durationSeconds', 'sampleSeconds', 'startsAt', 'speed', 'includeBoot', 'includeAuthorize'];
 const initialDraft = Object.fromEntries(draftFields.map(id => [id, $(id).type === 'checkbox' ? $(id).checked : $(id).value]));
 const initialAction = $('action').value;
 let draftKey = `/${$('connectorId').value}`;
@@ -18,6 +18,43 @@ function loadDraft() {
   const run = current?.id === selected ? current.schedules?.find(s => s.connectorId === number('connectorId')) : null;
   if (!drafts.has(draftKey) && run?.status === 'RUNNING' && run.steps) $('steps').value = JSON.stringify(run.steps, null, 2);
   $('planMessage').hidden = true;
+  $('meterStartMessage').textContent = '';
+  meterLoadVersion++;
+  if (selected && (!drafts.has(draftKey) || $('meterStartWh').value === '')) {
+    $('meterStartWh').value = '';
+    loadMeter();
+  }
+}
+async function loadMeter() {
+  if (!selected) return;
+  const key = draftKey, version = selectionVersion, request = ++meterLoadVersion;
+  const original = $('meterStartWh').value;
+  $('meterStartMessage').textContent = 'DB 시작 계량값 조회 중…';
+  try {
+    const rows = await api(chargerPath('meters'));
+    if (key !== draftKey || version !== selectionVersion || request !== meterLoadVersion) return;
+    const row = rows.find(r => Number(r.EVSE_ID) === number('connectorId'));
+    const kWh = row?.CA_ELE_NRG;
+    const wh = Math.round(Number(kWh) * 1000);
+    if (kWh === null || kWh === undefined || String(kWh).trim() === '' || !Number.isFinite(Number(kWh)) || Number(kWh) < 0 || !Number.isSafeInteger(wh) || wh > 2147483647)
+      throw new Error('선택 커넥터의 유효한 CA_ELE_NRG 값이 없습니다.');
+    if ($('meterStartWh').value !== original) {
+      $('meterStartMessage').textContent = '직접 입력한 시작 계량값을 유지합니다.';
+      return;
+    }
+    $('meterStartWh').value = String(wh);
+    $('meterStartMessage').textContent = 'DB: ' + kWh + ' kWh → ' + wh + ' Wh';
+  } catch (error) {
+    if (key !== draftKey || version !== selectionVersion || request !== meterLoadVersion) return;
+    $('meterStartMessage').textContent = '자동 입력 실패: ' + error.message + ' DB 값을 다시 조회하거나 직접 입력하세요.';
+  }
+}
+function duration() {
+  const hours = number('durationHours'), minutes = number('durationMinutes'), seconds = number('durationSeconds');
+  const total = hours * 3600 + minutes * 60 + seconds;
+  if (hours < 0 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59 || total < 1 || total > 86400)
+    throw new Error('충전 시간은 1초~24시간이며, 분과 초는 0~59로 입력하세요.');
+  return total;
 }
 function switchDraft() {
   saveDraft(); loadDraft();
@@ -171,9 +208,10 @@ async function plan(append) {
   try {
     const idTag = $('idTag').value.trim();
     if (!idTag) { $('idTag').focus(); throw new Error('회원카드 idTag를 입력한 뒤 스케줄을 생성하세요.'); }
+    if ($('meterStartWh').value.trim() === '') throw new Error('시작 계량값 DB 조회를 완료하거나 값을 직접 입력하세요.');
     const existing = append ? JSON.parse($('steps').value) : [];
     if (!Array.isArray(existing)) throw new Error('기존 스케줄은 배열이어야 합니다.');
-    const steps = await api('/api/plan', {connectorId: number('connectorId'), idTag, meterStartWh: number('meterStartWh'), energyWh: number('energyWh'), durationSeconds: number('durationSeconds'), sampleSeconds: number('sampleSeconds'), speed: number('speed'), startsAt: $('startsAt').value.trim(), includeBoot: $('includeBoot').checked, includeAuthorize: $('includeAuthorize').checked});
+    const steps = await api('/api/plan', {connectorId: number('connectorId'), idTag, meterStartWh: number('meterStartWh'), energyWh: number('energyWh'), durationSeconds: duration(), sampleSeconds: number('sampleSeconds'), speed: number('speed'), startsAt: $('startsAt').value.trim(), includeBoot: $('includeBoot').checked, includeAuthorize: $('includeAuthorize').checked});
     if (plannedVersion !== selectionVersion || plannedConnector !== $('connectorId').value) return;
     $('steps').value = JSON.stringify([...existing, ...steps], null, 2);
     message.textContent = `${steps.length}개 메시지 단계를 ${append ? '추가' : '생성'}했습니다. 아래 JSON을 확인한 뒤 스케줄 실행을 누르세요.`;
@@ -184,6 +222,7 @@ async function plan(append) {
     message.textContent = error.message; message.classList.add('error'); throw error;
   }
 }
+on('reloadMeter', loadMeter);
 on('makePlan', () => plan(false)); on('appendPlan', () => plan(true));
 on('runSchedule', async () => { await api(chargerPath('schedule'), {connectorId: number('connectorId'), steps: JSON.parse($('steps').value)}); notify(`커넥터 ${$('connectorId').value} 스케줄 실행을 시작했습니다.`); });
 on('stopSchedule', async () => { await api(chargerPath('stop'), {connectorId: number('connectorId')}); notify(`커넥터 ${$('connectorId').value}의 다음 단계부터 중지합니다. 이미 전송한 메시지의 응답은 계속 처리합니다.`); });

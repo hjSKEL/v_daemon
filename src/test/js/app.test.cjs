@@ -33,6 +33,8 @@ async function screen() {
   let fleet = [];
   let planResult = [{delayMs: 0, action: 'Authorize', payload: {idTag: 'CARD'}}];
   let planError;
+  let meterResult = [{EVSE_ID: '01', CA_ELE_NRG: 12.345}, {EVSE_ID: '02', CA_ELE_NRG: 67.89}];
+  let meterError;
   const context = vm.createContext({
     document: {getElementById: id => { assert.ok(elements.has(id), `Missing element ${id}`); return elements.get(id); }, createElement: () => element()},
     Option: function(text, value) { this.text = text; this.value = value; },
@@ -40,6 +42,7 @@ async function screen() {
     async fetch(url, options = {}) {
       requests.push({url, body: options.body ? JSON.parse(options.body) : undefined});
       if (url === '/api/chargers') return {ok: true, json: async () => fleet};
+      if (url.endsWith('/meters')) return {ok: !meterError, status: 400, json: async () => meterError ? {error: meterError} : meterResult};
       if (url.endsWith('/clear-error')) {
         const charger = fleet.find(c => url === `/api/chargers/${c.id}/clear-error`);
         if (charger) charger.lastError = '';
@@ -54,8 +57,80 @@ async function screen() {
   vm.runInContext(source, context);
   await new Promise(setImmediate);
   return {elements, calls, requests, context, setFleet: value => { fleet = value; }, click: id => elements.get(id).listeners.click(),
-    setPlan: result => { planResult = result; }, setError: error => { planError = error; }};
+    setPlan: result => { planResult = result; }, setError: error => { planError = error; },
+    setMeters: result => { meterResult = result; }, setMeterError: error => { meterError = error; }};
 }
+
+test('duration is converted to seconds, validates bounds and preserves connector drafts', async () => {
+  const ui = await screen();
+  ui.elements.get('idTag').value = 'CARD';
+  ui.elements.get('durationHours').value = '1'; ui.elements.get('durationMinutes').value = '2'; ui.elements.get('durationSeconds').value = '3';
+  await ui.click('makePlan');
+  assert.equal(ui.calls.at(-1).durationSeconds, 3723);
+  ui.elements.get('connectorId').value = '2'; ui.elements.get('connectorId').listeners.change();
+  assert.equal(ui.elements.get('durationMinutes').value, '1');
+  ui.elements.get('connectorId').value = '1'; ui.elements.get('connectorId').listeners.change();
+  assert.equal(ui.elements.get('durationHours').value, '1');
+  assert.equal(ui.elements.get('durationSeconds').value, '3');
+  for (const values of [[0, 0, 0], [-1, 0, 0], [1, 60, 0], [1, 0, 60], [24, 0, 1], [0.5, 0, 0]]) {
+    ['durationHours', 'durationMinutes', 'durationSeconds'].forEach((id, i) => { ui.elements.get(id).value = String(values[i]); });
+    const count = ui.calls.length;
+    await ui.click('makePlan');
+    assert.equal(ui.calls.length, count);
+    assert.ok(ui.elements.get('planMessage').classList.contains('error'));
+  }
+  ui.elements.get('durationHours').value = '24'; ui.elements.get('durationMinutes').value = '0'; ui.elements.get('durationSeconds').value = '0';
+  await ui.click('makePlan');
+  assert.equal(ui.calls.at(-1).durationSeconds, 86400);
+});
+
+test('DB meter follows connector, converts kWh to Wh and preserves manual drafts', async () => {
+  const ui = await screen(); ui.setFleet([charger('000001-01')]);
+  await vm.runInContext('refresh()', ui.context); await new Promise(setImmediate);
+  assert.equal(ui.elements.get('meterStartWh').value, '12345');
+  ui.elements.get('meterStartWh').value = '555';
+  ui.elements.get('connectorId').value = '2'; ui.elements.get('connectorId').listeners.change();
+  await new Promise(setImmediate);
+  assert.equal(ui.elements.get('meterStartWh').value, '67890');
+  ui.elements.get('connectorId').value = '1'; ui.elements.get('connectorId').listeners.change();
+  await new Promise(setImmediate);
+  assert.equal(ui.elements.get('meterStartWh').value, '555');
+  await ui.click('reloadMeter');
+  assert.equal(ui.elements.get('meterStartWh').value, '12345');
+});
+
+test('late DB responses cannot overwrite connector selection or manual input', async () => {
+  const ui = await screen(); ui.setFleet([charger('000001-01'), charger('000001-02')]);
+  await vm.runInContext('refresh()', ui.context); await new Promise(setImmediate);
+  let complete; ui.setMeters(new Promise(resolve => { complete = resolve; }));
+  const pending = ui.click('reloadMeter');
+  ui.elements.get('meterStartWh').value = '777';
+  complete([{EVSE_ID: 1, CA_ELE_NRG: 9}]); await pending;
+  assert.equal(ui.elements.get('meterStartWh').value, '777');
+  ui.setMeters(new Promise(resolve => { complete = resolve; }));
+  const old = ui.click('reloadMeter');
+  ui.setMeters([{EVSE_ID: 1, CA_ELE_NRG: 2}]);
+  await choose(ui, '000001-02'); await new Promise(setImmediate);
+  complete([{EVSE_ID: 1, CA_ELE_NRG: 99}]); await old;
+  assert.equal(ui.elements.get('meterStartWh').value, '2000');
+});
+
+test('missing or failed DB meter shows retry guidance and does not silently use zero', async () => {
+  const ui = await screen(); ui.setFleet([charger('000001-01')]); ui.setMeterError('DB unavailable');
+  await vm.runInContext('refresh()', ui.context); await new Promise(setImmediate);
+  assert.equal(ui.elements.get('meterStartWh').value, '');
+  assert.match(ui.elements.get('meterStartMessage').textContent, /DB unavailable/);
+  ui.elements.get('idTag').value = 'CARD'; await ui.click('makePlan');
+  assert.equal(ui.calls.length, 0);
+  ui.setMeterError('');
+  for (const value of [null, -1, 'invalid', 2147483.648]) {
+    ui.setMeters([{EVSE_ID: 1, CA_ELE_NRG: value}]); await ui.click('reloadMeter');
+    assert.equal(ui.elements.get('meterStartWh').value, '');
+    assert.match(ui.elements.get('meterStartMessage').textContent, /자동 입력 실패/);
+  }
+  ui.setMeters([{EVSE_ID: 1, CA_ELE_NRG: 0}]); await ui.click('reloadMeter');
+  assert.equal(ui.elements.get('meterStartWh').value, '0');
+});
 
 test('missing card shows actionable error beside generator and preserves JSON', async () => {
   const ui = await screen();

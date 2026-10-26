@@ -10,20 +10,31 @@ import java.util.Properties;
 final class Prerequisites {
     private final Config config;
     Prerequisites(Config config) { this.config = config; }
+    ArrayNode meters(String chargerId) throws SQLException {
+        if (!chargerId.matches("[0-9]{6}-[0-9]{2}")) throw new IllegalArgumentException("충전기 ID 형식 오류");
+        String[] ids = chargerId.split("-");
+        try (Connection db = connect()) {
+            db.setReadOnly(true);
+            return query(db, "SELECT EVSE_ID,CA_ELE_NRG FROM TB_CHCS005 WHERE CP_ID=? AND CS_ID=? ORDER BY EVSE_ID", ids[0], ids[1]);
+        }
+    }
+    private Connection connect() throws SQLException {
+        String url = config.get("db.url", "");
+        if (url.isBlank()) throw new IllegalStateException("config/local.properties에 조회할 db.url, db.username, db.password를 설정하세요.");
+        if (!url.startsWith("jdbc:mysql://")) throw new IllegalArgumentException("db.url은 jdbc:mysql:// 형식이어야 합니다.");
+        var properties = new Properties(); properties.setProperty("user", config.get("db.username", "")); properties.setProperty("password", config.get("db.password", ""));
+        properties.setProperty("connectTimeout", "5000"); properties.setProperty("socketTimeout", "5000");
+        return DriverManager.getConnection(url, properties);
+    }
     ObjectNode inspect(JsonNode input) throws SQLException {
         String chargerId = Json.required(input, "chargerId"), idTag = Json.required(input, "idTag");
         if (!chargerId.matches("[0-9]{6}-[0-9]{2}")) throw new IllegalArgumentException("충전기 ID 형식 오류");
         String[] ids = chargerId.split("-");
-        String url = config.get("db.url", "");
-        if (url.isBlank()) throw new IllegalStateException("config/local.properties에 조회할 db.url, db.username, db.password를 설정하세요.");
-        if (!url.startsWith("jdbc:mysql://")) throw new IllegalArgumentException("db.url은 jdbc:mysql:// 형식이어야 합니다.");
         Instant timestamp = Instant.parse(input.path("timestamp").asText(Instant.now().toString()));
         String date = timestamp.atZone(ZoneId.of("Asia/Seoul")).toLocalDate().format(DateTimeFormatter.BASIC_ISO_DATE);
-        var properties = new Properties(); properties.setProperty("user", config.get("db.username", "")); properties.setProperty("password", config.get("db.password", ""));
-        properties.setProperty("connectTimeout", "5000"); properties.setProperty("socketTimeout", "5000");
         ObjectNode result = Json.object().put("chargerId", chargerId).put("date", date).put("readOnly", true);
         ArrayNode checks = result.putArray("checks");
-        try (Connection db = DriverManager.getConnection(url, properties)) {
+        try (Connection db = connect()) {
             db.setReadOnly(true);
             ArrayNode site = query(db, "SELECT CP_ID FROM TB_CHCP001 WHERE CP_ID=?", ids[0]);
             check(checks, "충전소 TB_CHCP001", !site.isEmpty(), site);

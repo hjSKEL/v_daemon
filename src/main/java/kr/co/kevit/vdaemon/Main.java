@@ -79,6 +79,11 @@ public final class Main implements AutoCloseable {
             if (charger == null) throw new IllegalArgumentException("등록되지 않은 충전기입니다.");
             return charger.state().get(3, TimeUnit.SECONDS);
         }
+        if (method.equals("GET") && path.matches("/api/chargers/[0-9]{6}-[0-9]{2}/meters")) {
+            String id = path.split("/")[3];
+            if (!chargers.containsKey(id)) throw new IllegalArgumentException("등록되지 않은 충전기입니다.");
+            return new Prerequisites(config).meters(id);
+        }
         if (!method.equals("POST")) throw new IllegalArgumentException("지원하지 않는 API입니다.");
         if (path.equals("/api/plan")) return SessionPlan.create(body);
         if (path.equals("/api/validate")) return new Prerequisites(config).inspect(body);
