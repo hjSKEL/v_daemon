@@ -14,7 +14,7 @@ $javaArguments = @(
     '-Dserver.address=127.0.0.1',
     '-Ddaemon.health-check-enabled=false',
     '-jar', $daemonJarPath,
-    '1', '127.0.0.1', '8900'
+    '127.0.0.1', '8900'
 )
 if ($DryRun) {
     [pscustomobject]@{ WorkingDirectory = $PSScriptRoot; Arguments = $javaArguments }
